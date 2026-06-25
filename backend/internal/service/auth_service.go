@@ -144,3 +144,54 @@ func (s *AuthService) ApproveOperator(ctx context.Context, commanderID uuid.UUID
 	user.Status = models.StatusActive
 	return s.db.Save(&user).Error
 }
+
+// ۵. شروع فرآیند لاگین با Passkey
+func (s *AuthService) BeginLogin(ctx context.Context, username string) (*models.User, *protocol.CredentialAssertion, error) {
+	var user models.User
+	// همراه کاربر، کلیدهای ثبت شده‌اش رو هم واکشی می‌کنیم
+	if err := s.db.Preload("Credentials").Where("username = ?", username).First(&user).Error; err != nil {
+		return nil, nil, errors.New("کاربر یافت نشد")
+	}
+
+	if user.Status != models.StatusActive {
+		return nil, nil, errors.New("حساب کاربری شما فعال نیست (شاید در انتظار تایید فرمانده است)")
+	}
+
+	// تولید Challenge برای تایید هویت
+	assertion, sessionData, err := s.webAuthn.BeginLogin(&user)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// ذخیره SessionData موقت در ردیس برای 5 دقیقه
+	sessionKey := fmt.Sprintf("webauthn_login_session:%s", username)
+	s.redis.Set(ctx, sessionKey, sessionData, 5*time.Minute)
+
+	return &user, assertion, nil
+}
+
+// ۶. پایان فرآیند لاگین (بررسی امضای سخت‌افزاری و تولید توکن/سشن)
+func (s *AuthService) FinishLogin(ctx context.Context, username string, response *protocol.ParsedCredentialAssertionData, sessionData webauthn.SessionData) (string, error) {
+	var user models.User
+	if err := s.db.Preload("Credentials").Where("username = ?", username).First(&user).Error; err != nil {
+		return "", errors.New("کاربر یافت نشد")
+	}
+
+	// بررسی امضای ارسال شده از دانگل با اطلاعات دیتابیس
+	credential, err := s.webAuthn.ValidateLogin(&user, sessionData, response)
+	if err != nil {
+		return "", errors.New("تایید کلید سخت‌افزاری ناموفق بود: " + err.Error())
+	}
+
+	// آپدیت کردن SignCount برای جلوگیری از حملات Replay
+	s.db.Model(&models.WebAuthnCred{}).Where("credential_id = ?", credential.ID).Update("sign_count", credential.Authenticator.SignCount)
+
+	// تولید شناسه سشن (Session Token) تصادفی امن
+	sessionToken := uuid.New().String()
+
+	// ذخیره سشن در Redis با انقضای 12 ساعت
+	redisSessionKey := fmt.Sprintf("auth_session:%s", sessionToken)
+	s.redis.Set(ctx, redisSessionKey, user.ID.String(), 12*time.Hour)
+
+	return sessionToken, nil
+}

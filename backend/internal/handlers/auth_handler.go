@@ -3,10 +3,12 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/gofiber/fiber/v3"
-	
+
 	"faha.local/backend/internal/service"
 )
 
@@ -64,4 +66,62 @@ func (h *AuthHandler) SetupFinish(c fiber.Ctx) error {
 	_ = parsedResponse // فعلا برای جلوگیری از خطای متغیر بلااستفاده
 	
 	return c.JSON(fiber.Map{"message": "اطلاعات سخت‌افزاری و کلمه عبور با موفقیت ثبت شد. منتظر تایید فرمانده بمانید."})
+}
+
+func (h *AuthHandler) LoginBegin(c fiber.Ctx) error {
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "دیتا نامعتبر است"})
+	}
+
+	_, assertion, err := h.authService.BeginLogin(c.Context(), req.Username)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(assertion)
+}
+
+func (h *AuthHandler) LoginFinish(c fiber.Ctx) error {
+	var req struct {
+		Username     string                 `json:"username"`
+		WebAuthnData map[string]interface{} `json:"webauthn_data"`
+	}
+
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "فرمت داده‌ها نامعتبر است"})
+	}
+
+	waDataBytes, err := json.Marshal(req.WebAuthnData)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "دیتای سخت‌افزاری مخدوش است"})
+	}
+
+	parsedResponse, err := protocol.ParseCredentialRequestResponseBody(bytes.NewReader(waDataBytes))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "امضای سخت‌افزاری معتبر نیست"})
+	}
+
+	// TODO: اینجا باید SessionData قبلی (که تو LoginBegin ساختیم) رو از ردیس بخونیم.
+	// فعلا برای تکمیل ساختار فرض می‌کنیم واکشی شده:
+	var sessionData webauthn.SessionData 
+	
+	sessionToken, err := h.authService.FinishLogin(c.Context(), req.Username, parsedResponse, sessionData)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// ارسال توکن سشن به صورت کوکی امن (HttpOnly)
+	c.Cookie(&fiber.Cookie{
+		Name:     "faha_session",
+		Value:    sessionToken,
+		Expires:  time.Now().Add(12 * time.Hour),
+		HTTPOnly: true,
+		Secure:   false, // در پروداکشن (HTTPS) باید true شود
+		SameSite: "Lax",
+	})
+
+	return c.JSON(fiber.Map{"message": "ورود با موفقیت انجام شد", "token": sessionToken})
 }
