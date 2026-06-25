@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: faha_super_secret_db_pass_1405
       POSTGRES_DB: faha_db
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     networks:
@@ -20,7 +20,7 @@ services:
     restart: always
     command: redis-server --requirepass "faha_super_secret_redis_pass_1405"
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     networks:
