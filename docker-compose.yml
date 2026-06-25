@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: faha_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: faha_admin
+      POSTGRES_PASSWORD: faha_super_secret_db_pass_1405
+      POSTGRES_DB: faha_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - faha_net
+
+  redis:
+    image: redis:alpine
+    container_name: faha_redis
+    restart: always
+    command: redis-server --requirepass "faha_super_secret_redis_pass_1405"
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - faha_net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: faha_backend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=faha_admin
+      - DB_PASSWORD=faha_super_secret_db_pass_1405
+      - DB_NAME=faha_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=faha_super_secret_redis_pass_1405
+      - JWT_SECRET=faha_master_jwt_key_991288
+      - RP_DISPLAY_NAME=FAHA C4ISR Central Command
+      - RP_ID=localhost
+      - RP_ORIGIN=http://localhost:3000
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - faha_net
+
+networks:
+  faha_net:
+    driver: bridge
+
+volumes:
+  pg_data:
+  redis_data:
