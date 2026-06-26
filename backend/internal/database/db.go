@@ -20,7 +20,6 @@ var (
 )
 
 func Connect() {
-	// 1. اتصال به دیتابیس PostgreSQL (PostGIS)
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=Asia/Tehran",
 		os.Getenv("DB_HOST"),
 		os.Getenv("DB_USER"),
@@ -38,7 +37,6 @@ func Connect() {
 	}
 	log.Println("✅ Connected to PostgreSQL (PostGIS)")
 
-	// 2. اعمال مایگریشن جداول (AutoMigrate)
 	err = DB.AutoMigrate(
 		&models.Zone{},
 		&models.User{},
@@ -50,7 +48,6 @@ func Connect() {
 	}
 	log.Println("✅ Database Migrations Applied")
 
-	// 3. اتصال به Redis
 	Redis = redis.NewClient(&redis.Options{
 		Addr:     fmt.Sprintf("%s:%s", os.Getenv("REDIS_HOST"), os.Getenv("REDIS_PORT")),
 		Password: os.Getenv("REDIS_PASSWORD"),

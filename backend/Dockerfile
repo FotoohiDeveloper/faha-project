@@ -19,6 +19,7 @@ ENV TZ=Asia/Tehran
 
 WORKDIR /app
 COPY --from=builder /app/faha_api .
+COPY --from=builder /app/map.html .
 
 EXPOSE 3000
 CMD ["./faha_api"]

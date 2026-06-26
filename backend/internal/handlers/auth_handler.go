@@ -48,13 +48,11 @@ func (h *AuthHandler) SetupFinish(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "فرمت داده‌ها نامعتبر است"})
 	}
 
-	// تبدیل مجدد WebAuthnData به بایت برای پارس شدن توسط کتابخانه
 	waDataBytes, err := json.Marshal(req.WebAuthnData)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "دیتای سخت‌افزاری مخدوش است"})
 	}
 
-	// پارس کردن دیتای برگشتی از سمت مرورگر یا سخت‌افزار
 	parsedResponse, err := protocol.ParseCredentialCreationResponseBody(bytes.NewReader(waDataBytes))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "امضای سخت‌افزاری معتبر نیست"})
@@ -113,13 +111,12 @@ func (h *AuthHandler) LoginFinish(c fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	// ارسال توکن سشن به صورت کوکی امن (HttpOnly)
 	c.Cookie(&fiber.Cookie{
 		Name:     "faha_session",
 		Value:    sessionToken,
 		Expires:  time.Now().Add(12 * time.Hour),
 		HTTPOnly: true,
-		Secure:   false, // در پروداکشن (HTTPS) باید true شود
+		Secure:   false,
 		SameSite: "Lax",
 	})
 

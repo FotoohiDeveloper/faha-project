@@ -17,7 +17,6 @@ const (
 	StatusBlocked         UserStatus = "BLOCKED"          
 )
 
-// اصلاح ارور Rank به UserRank
 const (
 	RankDirectorGeneral UserRank = "DIRECTOR_GENERAL" // مدیر کل
 	RankCommander       UserRank = "COMMANDER"        // فرمانده

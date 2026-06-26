@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>پنل توسعه FAHA - رسم و ترکیب هوشمند محدوده‌ها</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+    <style>
+        body { margin: 0; padding: 0; font-family: Tahoma, Arial; }
+        #map { width: 100vw; height: 100vh; }
+        
+        .control-panel {
+            position: absolute; top: 10px; right: 50px; z-index: 1000;
+            background: rgba(255, 255, 255, 0.95); padding: 15px;
+            border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            width: 320px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        h3 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 5px; }
+
+        .section { margin-bottom: 20px; padding: 10px; background: #f9f9f9; border-radius: 6px; border: 1px solid #eee; }
+
+        .search-box { display: flex; margin-bottom: 5px; position: relative; }
+        .search-box input { flex: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; outline: none; font-family: Tahoma;}
+        .search-box button { padding: 8px; border: none; background: #34495e; color: white; cursor: pointer; border-radius: 4px; margin-right: 5px;}
+        
+        .search-results { 
+            position: absolute; top: 100%; left: 0; right: 0; 
+            background: white; border: 1px solid #ccc; 
+            border-radius: 4px; max-height: 150px; overflow-y: auto; 
+            display: none; z-index: 1001; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .search-item { padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; font-size: 13px; }
+        .search-item:hover { background: #3498db; color: white; }
+
+        .btn { width: 100%; padding: 8px; margin-bottom: 8px; border: none; border-radius: 4px; color: white; cursor: pointer; font-family: Tahoma; }
+        .btn-save { background: #27ae60; }
+        .btn-clear { background: #e67e22; }
+        .btn-rename { background: #2980b9; }
+        .btn-delete { background: #c0392b; }
+        .btn-cancel { background: #7f8c8d; }
+        .btn:hover { opacity: 0.9; }
+
+        .draft-info { font-size: 13px; color: #e67e22; margin-bottom: 10px; font-weight: bold; }
+        .edit-panel { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="control-panel">
+        
+        <div class="section" id="createSection">
+            <h3>ساخت محدوده جدید</h3>
+            <p style="font-size: 12px; color: #555;">با جستجو در OSM یا رسم دستی، محدوده‌ها را به پیش‌نویس اضافه کنید.</p>
+            
+            <div class="search-box">
+                <input type="text" id="osmSearchInput" placeholder="جستجو در نقشه جهانی (مثلا: اصفهان)...">
+                <button onclick="searchOSM()">جستجو</button>
+                <div class="search-results" id="osmSearchResults"></div>
+            </div>
+
+            <div class="draft-info" id="draftInfo">قطعات موقت: 0 عدد</div>
+            
+            <button class="btn btn-save" onclick="mergeAndSaveDraft()">ترکیب قطعات و ذخیره نهایی</button>
+            <button class="btn btn-clear" onclick="clearDraft()">پاک کردن پیش‌نویس</button>
+        </div>
+
+        <div class="section" id="dbSection">
+            <h3>محدوده‌های ذخیره شده</h3>
+            <div class="search-box">
+                <input type="text" id="localSearchInput" placeholder="جستجو در دیتابیس لوکال..." autocomplete="off">
+                <div class="search-results" id="localSearchResults"></div>
+            </div>
+
+            <div class="edit-panel" id="editPanel">
+                <h4 style="color: #d35400; margin: 0 0 10px 0;">ویرایش: <span id="selectedZoneName">---</span></h4>
+                <button class="btn btn-save" onclick="saveGeometry()">ذخیره شکل جدید</button>
+                <button class="btn btn-rename" onclick="renameZone()">تغییر نام</button>
+                <button class="btn btn-delete" onclick="deleteZone()">حذف محدوده</button>
+                <button class="btn btn-cancel" onclick="cancelEdit()">بستن ویرایش</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+    <script>
+        var map = L.map('map').setView([32.4279, 53.6880], 6); 
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
+
+        const API_URL = "/api/v1/dev/zones";
+
+        var savedItems = new L.FeatureGroup(); 
+        map.addLayer(savedItems);
+
+        var draftItems = new L.FeatureGroup();
+        map.addLayer(draftItems);
+
+        var drawControl = new L.Control.Draw({
+            draw: { polyline: false, marker: false, circlemarker: false, circle: false, rectangle: false, polygon: true },
+            edit: false 
+        });
+        map.addControl(drawControl);
+
+        map.on(L.Draw.Event.CREATED, function (event) {
+            var layer = event.layer;
+            layer.setStyle({ color: '#e67e22', weight: 2, fillOpacity: 0.4 });
+            draftItems.addLayer(layer);
+            updateDraftCount();
+        });
+
+        function updateDraftCount() {
+            document.getElementById('draftInfo').innerText = `قطعات موقت: ${draftItems.getLayers().length} عدد`;
+        }
+
+        function clearDraft() {
+            draftItems.clearLayers();
+            updateDraftCount();
+        }
+
+        // --- جستجوی هوشمند در OSM ---
+        async function searchOSM() {
+            let query = document.getElementById('osmSearchInput').value.trim();
+            if(!query) return;
+
+            let url = `https://nominatim.openstreetmap.org/search?q=${query}&format=json&polygon_geojson=1&limit=5`;
+            let res = await fetch(url);
+            let data = await res.json();
+
+            let resultsDiv = document.getElementById('osmSearchResults');
+            resultsDiv.innerHTML = '';
+
+            if (data.length === 0) {
+                resultsDiv.innerHTML = '<div class="search-item">نتیجه‌ای یافت نشد.</div>';
+            } else {
+                data.forEach(item => {
+                    let div = document.createElement('div');
+                    div.className = 'search-item';
+                    div.innerText = item.display_name;
+                    div.onclick = () => addOSMToDraft(item);
+                    resultsDiv.appendChild(div);
+                });
+            }
+            resultsDiv.style.display = 'block';
+        }
+
+        function addOSMToDraft(item) {
+            document.getElementById('osmSearchResults').style.display = 'none';
+            document.getElementById('osmSearchInput').value = '';
+
+            if (!item.geojson || (item.geojson.type !== 'Polygon' && item.geojson.type !== 'MultiPolygon')) {
+                alert("این مکان دارای مرز مشخص نیست.");
+                return;
+            }
+
+            // 🌟 جادوی اول: ساده‌سازی نقاط برای جلوگیری از کرش مرورگر (کاهش نقاط اضافی)
+            let simplified = turf.simplify(item.geojson, { tolerance: 0.005, highQuality: false });
+
+            let layer = L.geoJSON(simplified, {
+                style: { color: '#e67e22', weight: 2, fillOpacity: 0.4 }
+            });
+            
+            layer.eachLayer(l => draftItems.addLayer(l));
+            map.fitBounds(layer.getBounds());
+            updateDraftCount();
+        }
+
+        // --- ترکیب قطعات و ذخیره ---
+        async function mergeAndSaveDraft() {
+            let layers = draftItems.getLayers();
+            if (layers.length === 0) return;
+
+            let zoneName = prompt("لطفاً نامی برای این محدوده یکپارچه وارد کنید:");
+            if (!zoneName) return;
+
+            let mergedGeoJSON = null;
+
+            try {
+                layers.forEach(layer => {
+                    let poly = layer.toGeoJSON();
+                    
+                    // 🌟 جادوی دوم: باد کردن (Buffer) نامرئی پلی‌گان برای چسباندن مرزهایی که نیم‌متر با هم فاصله دارن
+                    poly = turf.buffer(poly, 0.002, {units: 'kilometers'});
+
+                    if (!mergedGeoJSON) {
+                        mergedGeoJSON = poly;
+                    } else {
+                        mergedGeoJSON = turf.union(mergedGeoJSON, poly);
+                    }
+                });
+                
+                // ساده‌سازی نهایی هندسه بعد از ترکیب
+                mergedGeoJSON = turf.simplify(mergedGeoJSON, { tolerance: 0.002 });
+
+            } catch (e) {
+                console.error(e);
+                alert("خطا در ترکیب هندسی!");
+                return;
+            }
+
+            let finalCoords = [];
+
+            // 🌟 جادوی سوم: حل مشکل MultiPolygon با استخراج بزرگترین تکه (سرزمین اصلی)
+            if (mergedGeoJSON.geometry.type === 'MultiPolygon') {
+                let maxArea = -1;
+                mergedGeoJSON.geometry.coordinates.forEach(coords => {
+                    let tempPoly = turf.polygon(coords); // ساخت پلی‌گان موقت
+                    let area = turf.area(tempPoly);      // محاسبه مساحت
+                    if (area > maxArea) {
+                        maxArea = area;
+                        finalCoords = coords[0]; // ذخیره حلقه بیرونی بزرگترین جزیره/استان
+                    }
+                });
+            } else if (mergedGeoJSON.geometry.type === 'Polygon') {
+                finalCoords = mergedGeoJSON.geometry.coordinates[0];
+            }
+
+            if (!finalCoords || finalCoords.length < 3) {
+                alert("محدوده قابل استخراج نیست. لطفاً قطعات را به هم نزدیک‌تر کنید.");
+                return;
+            }
+
+            // ارسال به بک‌اند
+            let response = await fetch(API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: zoneName, coordinates: finalCoords })
+            });
+
+            if (response.ok) {
+                clearDraft();
+                loadExistingZones();
+                alert(`محدوده "${zoneName}" با موفقیت ثبت شد.`);
+            } else {
+                let err = await response.json();
+                alert("خطا در ذخیره: " + err.error);
+            }
+        }
+
+        // --- بخش دیتابیس محلی ---
+        let currentSelectedLayer = null;
+
+        async function loadExistingZones() {
+            savedItems.clearLayers();
+            try {
+                let response = await fetch(API_URL);
+                if (response.ok) {
+                    let zones = await response.json();
+                    zones.forEach(zone => {
+                        let geoJsonData = JSON.parse(zone.geojson);
+                        let layer = L.geoJSON(geoJsonData, {
+                            style: { color: '#3498db', weight: 2, fillOpacity: 0.2 }
+                        }).getLayers()[0]; 
+
+                        layer.feature = { properties: { id: zone.id, name: zone.name } };
+                        layer.on('click', function(e) { selectZoneForEdit(e.target); });
+                        savedItems.addLayer(layer);
+                    });
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        document.getElementById('localSearchInput').addEventListener('input', function(e) {
+            let query = e.target.value.trim().toLowerCase();
+            let resultsDiv = document.getElementById('localSearchResults');
+            resultsDiv.innerHTML = '';
+            if (query.length === 0) { resultsDiv.style.display = 'none'; return; }
+
+            let foundCount = 0;
+            savedItems.eachLayer(layer => {
+                let zoneName = layer.feature.properties.name;
+                if (zoneName.toLowerCase().includes(query)) {
+                    foundCount++;
+                    let div = document.createElement('div');
+                    div.className = 'search-item';
+                    let regex = new RegExp(`(${query})`, "gi");
+                    div.innerHTML = zoneName.replace(regex, "<b>$1</b>");
+                    div.onclick = function() {
+                        resultsDiv.style.display = 'none'; 
+                        document.getElementById('localSearchInput').value = ''; 
+                        map.fitBounds(layer.getBounds()); 
+                        selectZoneForEdit(layer); 
+                    };
+                    resultsDiv.appendChild(div);
+                }
+            });
+
+            if (foundCount === 0) {
+                resultsDiv.innerHTML = '<div class="search-item">یافت نشد!</div>';
+            }
+            resultsDiv.style.display = 'block';
+        });
+
+        document.addEventListener('click', function(event) {
+            if (!event.target.closest('.search-box')) {
+                document.getElementById('osmSearchResults').style.display = 'none';
+                document.getElementById('localSearchResults').style.display = 'none';
+            }
+        });
+
+        function selectZoneForEdit(layer) {
+            if (currentSelectedLayer) { currentSelectedLayer.editing.disable(); }
+            currentSelectedLayer = layer;
+            layer.editing.enable(); 
+            document.getElementById('selectedZoneName').innerText = layer.feature.properties.name;
+            document.getElementById('editPanel').style.display = 'block';
+        }
+
+        function cancelEdit() {
+            if (currentSelectedLayer) {
+                currentSelectedLayer.editing.disable();
+                currentSelectedLayer = null;
+            }
+            document.getElementById('editPanel').style.display = 'none';
+            loadExistingZones(); 
+        }
+
+        async function saveGeometry() {
+            if (!currentSelectedLayer) return;
+            var coordinates = currentSelectedLayer.getLatLngs()[0].map(pt => [pt.lng, pt.lat]);
+            let id = currentSelectedLayer.feature.properties.id;
+            let response = await fetch(`${API_URL}/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ coordinates: coordinates })
+            });
+            if (response.ok) { alert('شکل محدوده بروزرسانی شد.'); cancelEdit(); } 
+            else { alert('خطا در بروزرسانی'); }
+        }
+
+        async function renameZone() {
+            if (!currentSelectedLayer) return;
+            let oldName = currentSelectedLayer.feature.properties.name;
+            let newName = prompt("نام جدید را وارد کنید:", oldName);
+            if (!newName || newName === oldName) return;
+            let id = currentSelectedLayer.feature.properties.id;
+            let response = await fetch(`${API_URL}/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: newName })
+            });
+            if (response.ok) { alert('نام تغییر کرد.'); cancelEdit(); }
+        }
+
+        async function deleteZone() {
+            if (!currentSelectedLayer) return;
+            if (!confirm(`حذف کامل "${currentSelectedLayer.feature.properties.name}"؟`)) return;
+            let id = currentSelectedLayer.feature.properties.id;
+            let response = await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
+            if (response.ok) { alert('محدوده حذف شد.'); cancelEdit(); }
+        }
+
+        loadExistingZones();
+    </script>
+</body>
+</html>
