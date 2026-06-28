@@ -1,7 +1,10 @@
 package utils
 
 import (
+	"crypto/rand"
 	"errors"
+	"fmt"
+	"math/big"
 	"unicode"
 
 	"golang.org/x/crypto/bcrypt"
@@ -48,9 +51,14 @@ func ValidatePasswordComplexity(password string) error {
 	return nil
 }
 
-// تولید کد یک‌بار‌مصرف 6 رقمی
+// تولید کد یک‌بار‌مصرف 6 رقمی با crypto/rand (امن رمزنگاری)
 func GenerateOTP() string {
-	// در یک سیستم واقعی از crypto/rand برای تولید رشته تصادفی امن استفاده می‌کنیم
-	// برای سادگی فعلا یک کد ثابت برمی‌گردانیم (شما با تابع رندوم امن جایگزین کنید)
-	return "123456" 
+	max := big.NewInt(1_000_000) // بازه 0 تا 999999
+	n, err := rand.Int(rand.Reader, max)
+	if err != nil {
+		// در صورت خطای سیستمی غیرمنتظره، panic بهتر از بازگشت مقدار ناامن است
+		panic("crypto/rand failed: " + err.Error())
+	}
+	// قالب‌بندی با صفر پیشرو تا 6 رقم
+	return fmt.Sprintf("%06d", n.Int64())
 }

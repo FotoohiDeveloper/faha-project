@@ -1,362 +1,799 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="fa" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <title>پنل توسعه FAHA - رسم و ترکیب هوشمند محدوده‌ها</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
-    <style>
-        body { margin: 0; padding: 0; font-family: Tahoma, Arial; }
-        #map { width: 100vw; height: 100vh; }
-        
-        .control-panel {
-            position: absolute; top: 10px; right: 50px; z-index: 1000;
-            background: rgba(255, 255, 255, 0.95); padding: 15px;
-            border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-            width: 320px;
-            max-height: 90vh;
-            overflow-y: auto;
-        }
-
-        h3 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 5px; }
-
-        .section { margin-bottom: 20px; padding: 10px; background: #f9f9f9; border-radius: 6px; border: 1px solid #eee; }
-
-        .search-box { display: flex; margin-bottom: 5px; position: relative; }
-        .search-box input { flex: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; outline: none; font-family: Tahoma;}
-        .search-box button { padding: 8px; border: none; background: #34495e; color: white; cursor: pointer; border-radius: 4px; margin-right: 5px;}
-        
-        .search-results { 
-            position: absolute; top: 100%; left: 0; right: 0; 
-            background: white; border: 1px solid #ccc; 
-            border-radius: 4px; max-height: 150px; overflow-y: auto; 
-            display: none; z-index: 1001; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        .search-item { padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; font-size: 13px; }
-        .search-item:hover { background: #3498db; color: white; }
-
-        .btn { width: 100%; padding: 8px; margin-bottom: 8px; border: none; border-radius: 4px; color: white; cursor: pointer; font-family: Tahoma; }
-        .btn-save { background: #27ae60; }
-        .btn-clear { background: #e67e22; }
-        .btn-rename { background: #2980b9; }
-        .btn-delete { background: #c0392b; }
-        .btn-cancel { background: #7f8c8d; }
-        .btn:hover { opacity: 0.9; }
-
-        .draft-info { font-size: 13px; color: #e67e22; margin-bottom: 10px; font-weight: bold; }
-        .edit-panel { display: none; }
-    </style>
-</head>
-<body>
-
-    <div class="control-panel">
-        
-        <div class="section" id="createSection">
-            <h3>ساخت محدوده جدید</h3>
-            <p style="font-size: 12px; color: #555;">با جستجو در OSM یا رسم دستی، محدوده‌ها را به پیش‌نویس اضافه کنید.</p>
-            
-            <div class="search-box">
-                <input type="text" id="osmSearchInput" placeholder="جستجو در نقشه جهانی (مثلا: اصفهان)...">
-                <button onclick="searchOSM()">جستجو</button>
-                <div class="search-results" id="osmSearchResults"></div>
-            </div>
-
-            <div class="draft-info" id="draftInfo">قطعات موقت: 0 عدد</div>
-            
-            <button class="btn btn-save" onclick="mergeAndSaveDraft()">ترکیب قطعات و ذخیره نهایی</button>
-            <button class="btn btn-clear" onclick="clearDraft()">پاک کردن پیش‌نویس</button>
-        </div>
-
-        <div class="section" id="dbSection">
-            <h3>محدوده‌های ذخیره شده</h3>
-            <div class="search-box">
-                <input type="text" id="localSearchInput" placeholder="جستجو در دیتابیس لوکال..." autocomplete="off">
-                <div class="search-results" id="localSearchResults"></div>
-            </div>
-
-            <div class="edit-panel" id="editPanel">
-                <h4 style="color: #d35400; margin: 0 0 10px 0;">ویرایش: <span id="selectedZoneName">---</span></h4>
-                <button class="btn btn-save" onclick="saveGeometry()">ذخیره شکل جدید</button>
-                <button class="btn btn-rename" onclick="renameZone()">تغییر نام</button>
-                <button class="btn btn-delete" onclick="deleteZone()">حذف محدوده</button>
-                <button class="btn btn-cancel" onclick="cancelEdit()">بستن ویرایش</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="map"></div>
-
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
-
-    <script>
-        var map = L.map('map').setView([32.4279, 53.6880], 6); 
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
-
-        const API_URL = "/api/v1/dev/zones";
-
-        var savedItems = new L.FeatureGroup(); 
-        map.addLayer(savedItems);
-
-        var draftItems = new L.FeatureGroup();
-        map.addLayer(draftItems);
-
-        var drawControl = new L.Control.Draw({
-            draw: { polyline: false, marker: false, circlemarker: false, circle: false, rectangle: false, polygon: true },
-            edit: false 
-        });
-        map.addControl(drawControl);
-
-        map.on(L.Draw.Event.CREATED, function (event) {
-            var layer = event.layer;
-            layer.setStyle({ color: '#e67e22', weight: 2, fillOpacity: 0.4 });
-            draftItems.addLayer(layer);
-            updateDraftCount();
-        });
-
-        function updateDraftCount() {
-            document.getElementById('draftInfo').innerText = `قطعات موقت: ${draftItems.getLayers().length} عدد`;
-        }
-
-        function clearDraft() {
-            draftItems.clearLayers();
-            updateDraftCount();
-        }
-
-        // --- جستجوی هوشمند در OSM ---
-        async function searchOSM() {
-            let query = document.getElementById('osmSearchInput').value.trim();
-            if(!query) return;
-
-            let url = `https://nominatim.openstreetmap.org/search?q=${query}&format=json&polygon_geojson=1&limit=5`;
-            let res = await fetch(url);
-            let data = await res.json();
-
-            let resultsDiv = document.getElementById('osmSearchResults');
-            resultsDiv.innerHTML = '';
-
-            if (data.length === 0) {
-                resultsDiv.innerHTML = '<div class="search-item">نتیجه‌ای یافت نشد.</div>';
-            } else {
-                data.forEach(item => {
-                    let div = document.createElement('div');
-                    div.className = 'search-item';
-                    div.innerText = item.display_name;
-                    div.onclick = () => addOSMToDraft(item);
-                    resultsDiv.appendChild(div);
-                });
+    <head>
+        <meta charset="UTF-8" />
+        <title>پنل توسعه FAHA - رسم و ترکیب هوشمند محدوده‌ها</title>
+        <link
+            rel="stylesheet"
+            href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        />
+        <link
+            rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"
+        />
+        <style>
+            * {
+                box-sizing: border-box;
             }
-            resultsDiv.style.display = 'block';
-        }
-
-        function addOSMToDraft(item) {
-            document.getElementById('osmSearchResults').style.display = 'none';
-            document.getElementById('osmSearchInput').value = '';
-
-            if (!item.geojson || (item.geojson.type !== 'Polygon' && item.geojson.type !== 'MultiPolygon')) {
-                alert("این مکان دارای مرز مشخص نیست.");
-                return;
+            body {
+                margin: 0;
+                padding: 0;
+                font-family: Tahoma, Arial;
+                background: #1a1a2e;
+            }
+            #map {
+                width: 100vw;
+                height: 100vh;
             }
 
-            // 🌟 جادوی اول: ساده‌سازی نقاط برای جلوگیری از کرش مرورگر (کاهش نقاط اضافی)
-            let simplified = turf.simplify(item.geojson, { tolerance: 0.005, highQuality: false });
+            .control-panel {
+                position: absolute;
+                top: 10px;
+                right: 50px;
+                z-index: 1000;
+                background: rgba(15, 20, 40, 0.93);
+                border: 1px solid rgba(52, 152, 219, 0.3);
+                padding: 15px;
+                border-radius: 10px;
+                box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+                width: 310px;
+                max-height: 92vh;
+                overflow-y: auto;
+                color: #cdd6e0;
+            }
 
-            let layer = L.geoJSON(simplified, {
-                style: { color: '#e67e22', weight: 2, fillOpacity: 0.4 }
+            .control-panel::-webkit-scrollbar {
+                width: 5px;
+            }
+            .control-panel::-webkit-scrollbar-track {
+                background: transparent;
+            }
+            .control-panel::-webkit-scrollbar-thumb {
+                background: #2980b9;
+                border-radius: 4px;
+            }
+
+            h3 {
+                margin: 0 0 10px 0;
+                color: #5dade2;
+                font-size: 14px;
+                border-bottom: 1px solid rgba(52, 152, 219, 0.3);
+                padding-bottom: 8px;
+                letter-spacing: 0.5px;
+            }
+
+            .section {
+                margin-bottom: 14px;
+                padding: 12px;
+                background: rgba(255, 255, 255, 0.04);
+                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 0.06);
+            }
+
+            .section p {
+                font-size: 11px;
+                color: #7f8c9a;
+                margin: 0 0 10px 0;
+                line-height: 1.6;
+            }
+
+            /* --- جستجو --- */
+            .search-box {
+                display: flex;
+                margin-bottom: 5px;
+                position: relative;
+            }
+            .search-box input {
+                flex: 1;
+                padding: 8px 10px;
+                border: 1px solid rgba(52, 152, 219, 0.3);
+                border-radius: 5px;
+                outline: none;
+                font-family: Tahoma;
+                font-size: 12px;
+                background: rgba(255, 255, 255, 0.07);
+                color: #dce6f0;
+                transition: border-color 0.2s;
+            }
+            .search-box input::placeholder {
+                color: #5a6a78;
+            }
+            .search-box input:focus {
+                border-color: #3498db;
+            }
+            .search-box button {
+                padding: 8px 12px;
+                border: none;
+                background: #2980b9;
+                color: white;
+                cursor: pointer;
+                border-radius: 5px;
+                margin-right: 6px;
+                font-size: 12px;
+                transition: background 0.2s;
+            }
+            .search-box button:hover {
+                background: #3498db;
+            }
+
+            .search-results {
+                position: absolute;
+                top: calc(100% + 4px);
+                left: 0;
+                right: 0;
+                background: #1c2840;
+                border: 1px solid #2980b9;
+                border-radius: 6px;
+                max-height: 160px;
+                overflow-y: auto;
+                display: none;
+                z-index: 1001;
+                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+            }
+            .search-item {
+                padding: 9px 12px;
+                cursor: pointer;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+                font-size: 12px;
+                color: #bcc8d4;
+                transition: background 0.15s;
+            }
+            .search-item:last-child {
+                border-bottom: none;
+            }
+            .search-item:hover {
+                background: #2980b9;
+                color: white;
+            }
+
+            /* --- دکمه‌ها --- */
+            .btn {
+                width: 100%;
+                padding: 8px 10px;
+                margin-bottom: 7px;
+                border: none;
+                border-radius: 5px;
+                color: white;
+                cursor: pointer;
+                font-family: Tahoma;
+                font-size: 12px;
+                font-weight: bold;
+                letter-spacing: 0.3px;
+                transition:
+                    opacity 0.2s,
+                    transform 0.1s;
+            }
+            .btn:last-child {
+                margin-bottom: 0;
+            }
+            .btn:hover {
+                opacity: 0.88;
+                transform: translateY(-1px);
+            }
+            .btn:active {
+                transform: translateY(0);
+            }
+
+            .btn-save {
+                background: linear-gradient(135deg, #27ae60, #1e8449);
+            }
+            .btn-clear {
+                background: linear-gradient(135deg, #e67e22, #ca6f1e);
+            }
+            .btn-edit {
+                background: linear-gradient(135deg, #2980b9, #1a6fa0);
+            }
+            .btn-rename {
+                background: linear-gradient(135deg, #8e44ad, #76359a);
+            }
+            .btn-delete {
+                background: linear-gradient(135deg, #c0392b, #a93226);
+            }
+            .btn-cancel {
+                background: linear-gradient(135deg, #566573, #444f59);
+            }
+
+            /* --- اطلاعات پیش‌نویس --- */
+            .draft-info {
+                font-size: 12px;
+                color: #e67e22;
+                margin-bottom: 10px;
+                font-weight: bold;
+                padding: 5px 8px;
+                background: rgba(230, 126, 34, 0.1);
+                border-radius: 4px;
+                border-right: 3px solid #e67e22;
+            }
+
+            /* --- پنل انتخاب محدوده (نمایش / ویرایش) --- */
+            .zone-info-panel {
+                display: none;
+            }
+
+            .zone-name-display {
+                font-size: 13px;
+                font-weight: bold;
+                color: #5dade2;
+                margin-bottom: 10px;
+                padding: 7px 10px;
+                background: rgba(52, 152, 219, 0.12);
+                border-radius: 5px;
+                border-right: 3px solid #3498db;
+            }
+
+            .edit-panel {
+                display: none;
+            }
+
+            .edit-mode-badge {
+                display: inline-block;
+                font-size: 11px;
+                color: #f39c12;
+                background: rgba(243, 156, 18, 0.15);
+                border: 1px solid rgba(243, 156, 18, 0.3);
+                border-radius: 4px;
+                padding: 3px 8px;
+                margin-bottom: 10px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="control-panel">
+            <!-- بخش ساخت محدوده جدید -->
+            <div class="section" id="createSection">
+                <h3>⊕ ساخت محدوده جدید</h3>
+                <p>
+                    با جستجو در OSM یا رسم دستی روی نقشه، قطعات را اضافه کنید.
+                </p>
+
+                <div class="search-box">
+                    <input
+                        type="text"
+                        id="osmSearchInput"
+                        placeholder="جستجو در OSM (مثلاً: اصفهان)..."
+                        onkeydown="if (event.key === 'Enter') searchOSM();"
+                    />
+                    <button onclick="searchOSM()">جستجو</button>
+                    <div class="search-results" id="osmSearchResults"></div>
+                </div>
+
+                <div class="draft-info" id="draftInfo">قطعات موقت: ۰ عدد</div>
+
+                <button class="btn btn-save" onclick="mergeAndSaveDraft()">
+                    ترکیب و ذخیره نهایی
+                </button>
+                <button class="btn btn-clear" onclick="clearDraft()">
+                    پاک کردن پیش‌نویس
+                </button>
+            </div>
+
+            <!-- بخش محدوده‌های ذخیره‌شده -->
+            <div class="section" id="dbSection">
+                <h3>🗄 محدوده‌های ذخیره‌شده</h3>
+
+                <div class="search-box">
+                    <input
+                        type="text"
+                        id="localSearchInput"
+                        placeholder="جستجو در دیتابیس لوکال..."
+                        autocomplete="off"
+                    />
+                    <div class="search-results" id="localSearchResults"></div>
+                </div>
+
+                <!-- وقتی محدوده‌ای انتخاب شد (نه ویرایش، فقط نمایش) -->
+                <div class="zone-info-panel" id="zoneInfoPanel">
+                    <div class="zone-name-display" id="selectedZoneName">
+                        ---
+                    </div>
+                    <button class="btn btn-edit" onclick="enterEditMode()">
+                        ✏️ ویرایش شکل محدوده
+                    </button>
+                    <button class="btn btn-rename" onclick="renameZone()">
+                        تغییر نام
+                    </button>
+                    <button class="btn btn-delete" onclick="deleteZone()">
+                        حذف محدوده
+                    </button>
+                    <button class="btn btn-cancel" onclick="cancelSelection()">
+                        بستن
+                    </button>
+                </div>
+
+                <!-- وقتی حالت ویرایش فعاله -->
+                <div class="edit-panel" id="editPanel">
+                    <div class="edit-mode-badge">
+                        ✏️ حالت ویرایش فعال — نقاط را جابجا کنید
+                    </div>
+                    <button class="btn btn-save" onclick="saveGeometry()">
+                        💾 ذخیره تغییرات شکل
+                    </button>
+                    <button class="btn btn-cancel" onclick="cancelEdit()">
+                        انصراف از ویرایش
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="map"></div>
+
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+        <script>
+            // ========== راه‌اندازی نقشه ==========
+            var map = L.map("map").setView([32.4279, 53.688], 6);
+            L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+                maxZoom: 18,
+                attribution: "© OpenStreetMap",
+            }).addTo(map);
+
+            const API_URL = "/api/v1/dev/zones";
+
+            // استایل‌های مختلف محدوده
+            const STYLE_DEFAULT = {
+                color: "#2e4a6b",
+                weight: 1.5,
+                fillColor: "#2e4a6b",
+                fillOpacity: 0.15,
+            };
+            const STYLE_SELECTED = {
+                color: "#3498db",
+                weight: 2.5,
+                fillColor: "#3498db",
+                fillOpacity: 0.3,
+            };
+            const STYLE_EDITING = {
+                color: "#f39c12",
+                weight: 2.5,
+                fillColor: "#f39c12",
+                fillOpacity: 0.25,
+            };
+            const STYLE_DRAFT = {
+                color: "#e67e22",
+                weight: 2,
+                fillColor: "#e67e22",
+                fillOpacity: 0.35,
+            };
+
+            var savedItems = new L.FeatureGroup().addTo(map);
+            var draftItems = new L.FeatureGroup().addTo(map);
+
+            var currentSelectedLayer = null; // لایه انتخاب‌شده
+            var isEditMode = false; // آیا حالت ویرایش فعاله؟
+
+            // ابزار رسم دستی
+            var drawControl = new L.Control.Draw({
+                draw: {
+                    polygon: { shapeOptions: STYLE_DRAFT },
+                    polyline: false,
+                    marker: false,
+                    circlemarker: false,
+                    circle: false,
+                    rectangle: false,
+                },
+                edit: false,
             });
-            
-            layer.eachLayer(l => draftItems.addLayer(l));
-            map.fitBounds(layer.getBounds());
-            updateDraftCount();
-        }
+            map.addControl(drawControl);
 
-        // --- ترکیب قطعات و ذخیره ---
-        async function mergeAndSaveDraft() {
-            let layers = draftItems.getLayers();
-            if (layers.length === 0) return;
+            map.on(L.Draw.Event.CREATED, function (event) {
+                var layer = event.layer;
+                layer.setStyle(STYLE_DRAFT);
+                draftItems.addLayer(layer);
+                updateDraftCount();
+            });
 
-            let zoneName = prompt("لطفاً نامی برای این محدوده یکپارچه وارد کنید:");
-            if (!zoneName) return;
+            // کلیک روی نقشه (جای خالی) — برداشتن انتخاب
+            map.on("click", function (e) {
+                // اگه کلیک مستقیم روی نقشه بود (نه روی لایه)
+                cancelSelection();
+            });
 
-            let mergedGeoJSON = null;
+            function updateDraftCount() {
+                const n = draftItems.getLayers().length;
+                document.getElementById("draftInfo").innerText =
+                    `قطعات موقت: ${toPersianNum(n)} عدد`;
+            }
 
-            try {
-                layers.forEach(layer => {
-                    let poly = layer.toGeoJSON();
-                    
-                    // 🌟 جادوی دوم: باد کردن (Buffer) نامرئی پلی‌گان برای چسباندن مرزهایی که نیم‌متر با هم فاصله دارن
-                    poly = turf.buffer(poly, 0.002, {units: 'kilometers'});
+            function toPersianNum(n) {
+                return String(n).replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+            }
 
-                    if (!mergedGeoJSON) {
-                        mergedGeoJSON = poly;
+            function clearDraft() {
+                draftItems.clearLayers();
+                updateDraftCount();
+            }
+
+            // ========== جستجوی OSM ==========
+            async function searchOSM() {
+                let query = document
+                    .getElementById("osmSearchInput")
+                    .value.trim();
+                if (!query) return;
+
+                let resultsDiv = document.getElementById("osmSearchResults");
+                resultsDiv.innerHTML =
+                    '<div class="search-item" style="color:#7f8c9a;">در حال جستجو...</div>';
+                resultsDiv.style.display = "block";
+
+                try {
+                    let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&polygon_geojson=1&limit=6`;
+                    let res = await fetch(url);
+                    let data = await res.json();
+
+                    resultsDiv.innerHTML = "";
+                    if (data.length === 0) {
+                        resultsDiv.innerHTML =
+                            '<div class="search-item" style="color:#e74c3c;">نتیجه‌ای یافت نشد.</div>';
                     } else {
-                        mergedGeoJSON = turf.union(mergedGeoJSON, poly);
+                        data.forEach((item) => {
+                            let div = document.createElement("div");
+                            div.className = "search-item";
+                            div.innerText = item.display_name;
+                            div.onclick = () => addOSMToDraft(item);
+                            resultsDiv.appendChild(div);
+                        });
                     }
+                } catch (e) {
+                    resultsDiv.innerHTML =
+                        '<div class="search-item" style="color:#e74c3c;">خطا در اتصال به OSM</div>';
+                }
+                resultsDiv.style.display = "block";
+            }
+
+            function addOSMToDraft(item) {
+                document.getElementById("osmSearchResults").style.display =
+                    "none";
+                document.getElementById("osmSearchInput").value = "";
+
+                if (
+                    !item.geojson ||
+                    (item.geojson.type !== "Polygon" &&
+                        item.geojson.type !== "MultiPolygon")
+                ) {
+                    alert("این مکان دارای مرز مشخص نیست.");
+                    return;
+                }
+
+                let simplified = turf.simplify(item.geojson, {
+                    tolerance: 0.005,
+                    highQuality: false,
                 });
-                
-                // ساده‌سازی نهایی هندسه بعد از ترکیب
-                mergedGeoJSON = turf.simplify(mergedGeoJSON, { tolerance: 0.002 });
-
-            } catch (e) {
-                console.error(e);
-                alert("خطا در ترکیب هندسی!");
-                return;
+                let layer = L.geoJSON(simplified, { style: STYLE_DRAFT });
+                layer.eachLayer((l) => draftItems.addLayer(l));
+                map.fitBounds(layer.getBounds(), { padding: [40, 40] });
+                updateDraftCount();
             }
 
-            let finalCoords = [];
+            // ========== ترکیب و ذخیره ==========
+            async function mergeAndSaveDraft() {
+                let layers = draftItems.getLayers();
+                if (layers.length === 0) {
+                    alert("ابتدا حداقل یک قطعه رسم کنید.");
+                    return;
+                }
 
-            // 🌟 جادوی سوم: حل مشکل MultiPolygon با استخراج بزرگترین تکه (سرزمین اصلی)
-            if (mergedGeoJSON.geometry.type === 'MultiPolygon') {
-                let maxArea = -1;
-                mergedGeoJSON.geometry.coordinates.forEach(coords => {
-                    let tempPoly = turf.polygon(coords); // ساخت پلی‌گان موقت
-                    let area = turf.area(tempPoly);      // محاسبه مساحت
-                    if (area > maxArea) {
-                        maxArea = area;
-                        finalCoords = coords[0]; // ذخیره حلقه بیرونی بزرگترین جزیره/استان
-                    }
+                let zoneName = prompt("نامی برای این محدوده وارد کنید:");
+                if (!zoneName || !zoneName.trim()) return;
+
+                let mergedGeoJSON = null;
+                try {
+                    layers.forEach((layer) => {
+                        let poly = layer.toGeoJSON();
+                        poly = turf.buffer(poly, 0.002, {
+                            units: "kilometers",
+                        });
+                        mergedGeoJSON = mergedGeoJSON
+                            ? turf.union(mergedGeoJSON, poly)
+                            : poly;
+                    });
+                    mergedGeoJSON = turf.simplify(mergedGeoJSON, {
+                        tolerance: 0.002,
+                    });
+                } catch (e) {
+                    console.error(e);
+                    alert("خطا در ترکیب هندسی!");
+                    return;
+                }
+
+                let finalCoords = [];
+                if (mergedGeoJSON.geometry.type === "MultiPolygon") {
+                    let maxArea = -1;
+                    mergedGeoJSON.geometry.coordinates.forEach((coords) => {
+                        let area = turf.area(turf.polygon(coords));
+                        if (area > maxArea) {
+                            maxArea = area;
+                            finalCoords = coords[0];
+                        }
+                    });
+                } else {
+                    finalCoords = mergedGeoJSON.geometry.coordinates[0];
+                }
+
+                if (!finalCoords || finalCoords.length < 3) {
+                    alert("محدوده قابل استخراج نیست.");
+                    return;
+                }
+
+                let response = await fetch(API_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        name: zoneName.trim(),
+                        coordinates: finalCoords,
+                    }),
                 });
-            } else if (mergedGeoJSON.geometry.type === 'Polygon') {
-                finalCoords = mergedGeoJSON.geometry.coordinates[0];
-            }
 
-            if (!finalCoords || finalCoords.length < 3) {
-                alert("محدوده قابل استخراج نیست. لطفاً قطعات را به هم نزدیک‌تر کنید.");
-                return;
-            }
-
-            // ارسال به بک‌اند
-            let response = await fetch(API_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: zoneName, coordinates: finalCoords })
-            });
-
-            if (response.ok) {
-                clearDraft();
-                loadExistingZones();
-                alert(`محدوده "${zoneName}" با موفقیت ثبت شد.`);
-            } else {
-                let err = await response.json();
-                alert("خطا در ذخیره: " + err.error);
-            }
-        }
-
-        // --- بخش دیتابیس محلی ---
-        let currentSelectedLayer = null;
-
-        async function loadExistingZones() {
-            savedItems.clearLayers();
-            try {
-                let response = await fetch(API_URL);
                 if (response.ok) {
+                    clearDraft();
+                    await loadExistingZones();
+                    alert(`محدوده "${zoneName}" با موفقیت ثبت شد.`);
+                } else {
+                    let err = await response.json();
+                    alert("خطا در ذخیره: " + err.error);
+                }
+            }
+
+            // ========== بارگذاری محدوده‌های دیتابیس ==========
+            async function loadExistingZones() {
+                savedItems.clearLayers();
+                try {
+                    let response = await fetch(API_URL);
+                    if (!response.ok) return;
                     let zones = await response.json();
-                    zones.forEach(zone => {
+                    zones.forEach((zone) => {
                         let geoJsonData = JSON.parse(zone.geojson);
                         let layer = L.geoJSON(geoJsonData, {
-                            style: { color: '#3498db', weight: 2, fillOpacity: 0.2 }
-                        }).getLayers()[0]; 
+                            style: STYLE_DEFAULT,
+                        }).getLayers()[0];
+                        layer.feature = {
+                            properties: { id: zone.id, name: zone.name },
+                        };
 
-                        layer.feature = { properties: { id: zone.id, name: zone.name } };
-                        layer.on('click', function(e) { selectZoneForEdit(e.target); });
+                        // کلیک روی محدوده — فقط انتخاب، نه ویرایش
+                        layer.on("click", function (e) {
+                            L.DomEvent.stopPropagation(e); // جلوگیری از رسیدن کلیک به نقشه
+                            selectZone(e.target);
+                        });
+
+                        layer.on("mouseover", function () {
+                            if (this !== currentSelectedLayer) {
+                                this.setStyle({ fillOpacity: 0.25, weight: 2 });
+                            }
+                        });
+                        layer.on("mouseout", function () {
+                            if (this !== currentSelectedLayer) {
+                                this.setStyle(STYLE_DEFAULT);
+                            }
+                        });
+
                         savedItems.addLayer(layer);
                     });
+                } catch (e) {
+                    console.error(e);
                 }
-            } catch (e) { console.error(e); }
-        }
+            }
 
-        document.getElementById('localSearchInput').addEventListener('input', function(e) {
-            let query = e.target.value.trim().toLowerCase();
-            let resultsDiv = document.getElementById('localSearchResults');
-            resultsDiv.innerHTML = '';
-            if (query.length === 0) { resultsDiv.style.display = 'none'; return; }
+            // ========== جستجوی لوکال ==========
+            document
+                .getElementById("localSearchInput")
+                .addEventListener("input", function (e) {
+                    let query = e.target.value.trim().toLowerCase();
+                    let resultsDiv =
+                        document.getElementById("localSearchResults");
+                    resultsDiv.innerHTML = "";
 
-            let foundCount = 0;
-            savedItems.eachLayer(layer => {
-                let zoneName = layer.feature.properties.name;
-                if (zoneName.toLowerCase().includes(query)) {
-                    foundCount++;
-                    let div = document.createElement('div');
-                    div.className = 'search-item';
-                    let regex = new RegExp(`(${query})`, "gi");
-                    div.innerHTML = zoneName.replace(regex, "<b>$1</b>");
-                    div.onclick = function() {
-                        resultsDiv.style.display = 'none'; 
-                        document.getElementById('localSearchInput').value = ''; 
-                        map.fitBounds(layer.getBounds()); 
-                        selectZoneForEdit(layer); 
-                    };
-                    resultsDiv.appendChild(div);
+                    if (query.length === 0) {
+                        resultsDiv.style.display = "none";
+                        return;
+                    }
+
+                    let found = 0;
+                    savedItems.eachLayer((layer) => {
+                        let name = layer.feature.properties.name;
+                        if (name.toLowerCase().includes(query)) {
+                            found++;
+                            let div = document.createElement("div");
+                            div.className = "search-item";
+                            let regex = new RegExp(`(${query})`, "gi");
+                            div.innerHTML = name.replace(regex, "<b>$1</b>");
+                            div.onclick = function () {
+                                resultsDiv.style.display = "none";
+                                document.getElementById(
+                                    "localSearchInput",
+                                ).value = "";
+                                // فقط انتخاب و زوم — بدون ویرایش
+                                selectZone(layer);
+                                map.fitBounds(layer.getBounds(), {
+                                    padding: [60, 60],
+                                });
+                            };
+                            resultsDiv.appendChild(div);
+                        }
+                    });
+
+                    if (found === 0) {
+                        resultsDiv.innerHTML =
+                            '<div class="search-item" style="color:#e74c3c;">یافت نشد!</div>';
+                    }
+                    resultsDiv.style.display = "block";
+                });
+
+            // بستن dropdownها با کلیک بیرون
+            document.addEventListener("click", function (event) {
+                if (!event.target.closest(".search-box")) {
+                    document.getElementById("osmSearchResults").style.display =
+                        "none";
+                    document.getElementById(
+                        "localSearchResults",
+                    ).style.display = "none";
                 }
             });
 
-            if (foundCount === 0) {
-                resultsDiv.innerHTML = '<div class="search-item">یافت نشد!</div>';
+            // ========== منطق انتخاب / ویرایش ==========
+
+            // انتخاب محدوده (بدون ویرایش)
+            function selectZone(layer) {
+                // اگه قبلاً همین بود، نادیده بگیر
+                if (currentSelectedLayer === layer && !isEditMode) return;
+
+                // اگه حالت ویرایش فعاله، اول ببند
+                if (isEditMode) {
+                    currentSelectedLayer.editing.disable();
+                    isEditMode = false;
+                }
+
+                // استایل قبلی رو برگردون
+                if (currentSelectedLayer && currentSelectedLayer !== layer) {
+                    currentSelectedLayer.setStyle(STYLE_DEFAULT);
+                }
+
+                currentSelectedLayer = layer;
+                layer.setStyle(STYLE_SELECTED);
+
+                // رستِ همه لایه‌های دیگه رو خاموش کن
+                savedItems.eachLayer((l) => {
+                    if (l !== layer) l.setStyle(STYLE_DEFAULT);
+                });
+
+                // UI رو نشون بده
+                document.getElementById("selectedZoneName").innerText =
+                    layer.feature.properties.name;
+                document.getElementById("zoneInfoPanel").style.display =
+                    "block";
+                document.getElementById("editPanel").style.display = "none";
             }
-            resultsDiv.style.display = 'block';
-        });
 
-        document.addEventListener('click', function(event) {
-            if (!event.target.closest('.search-box')) {
-                document.getElementById('osmSearchResults').style.display = 'none';
-                document.getElementById('localSearchResults').style.display = 'none';
+            // ورود به حالت ویرایش (فقط با دکمه «ویرایش»)
+            function enterEditMode() {
+                if (!currentSelectedLayer) return;
+                isEditMode = true;
+                currentSelectedLayer.setStyle(STYLE_EDITING);
+                currentSelectedLayer.editing.enable();
+
+                document.getElementById("zoneInfoPanel").style.display = "none";
+                document.getElementById("editPanel").style.display = "block";
             }
-        });
 
-        function selectZoneForEdit(layer) {
-            if (currentSelectedLayer) { currentSelectedLayer.editing.disable(); }
-            currentSelectedLayer = layer;
-            layer.editing.enable(); 
-            document.getElementById('selectedZoneName').innerText = layer.feature.properties.name;
-            document.getElementById('editPanel').style.display = 'block';
-        }
-
-        function cancelEdit() {
-            if (currentSelectedLayer) {
-                currentSelectedLayer.editing.disable();
-                currentSelectedLayer = null;
+            // انصراف از انتخاب (بستن پنل)
+            function cancelSelection() {
+                if (isEditMode) {
+                    cancelEdit();
+                    return;
+                }
+                if (currentSelectedLayer) {
+                    currentSelectedLayer.setStyle(STYLE_DEFAULT);
+                    currentSelectedLayer = null;
+                }
+                document.getElementById("zoneInfoPanel").style.display = "none";
+                document.getElementById("editPanel").style.display = "none";
             }
-            document.getElementById('editPanel').style.display = 'none';
-            loadExistingZones(); 
-        }
 
-        async function saveGeometry() {
-            if (!currentSelectedLayer) return;
-            var coordinates = currentSelectedLayer.getLatLngs()[0].map(pt => [pt.lng, pt.lat]);
-            let id = currentSelectedLayer.feature.properties.id;
-            let response = await fetch(`${API_URL}/${id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ coordinates: coordinates })
-            });
-            if (response.ok) { alert('شکل محدوده بروزرسانی شد.'); cancelEdit(); } 
-            else { alert('خطا در بروزرسانی'); }
-        }
+            // انصراف از ویرایش (برگشت به حالت انتخاب)
+            function cancelEdit() {
+                if (currentSelectedLayer) {
+                    currentSelectedLayer.editing.disable();
+                    currentSelectedLayer.setStyle(STYLE_SELECTED);
+                }
+                isEditMode = false;
+                document.getElementById("editPanel").style.display = "none";
+                document.getElementById("zoneInfoPanel").style.display =
+                    currentSelectedLayer ? "block" : "none";
+                // رلود برای برگشت شکل اصلی
+                loadExistingZones().then(() => {
+                    // بعد از رلود، محدوده انتخابی دوباره highlight بشه
+                    if (currentSelectedLayer) {
+                        let targetId =
+                            currentSelectedLayer.feature.properties.id;
+                        currentSelectedLayer = null;
+                        savedItems.eachLayer((l) => {
+                            if (l.feature.properties.id === targetId) {
+                                selectZone(l);
+                            }
+                        });
+                    }
+                });
+            }
 
-        async function renameZone() {
-            if (!currentSelectedLayer) return;
-            let oldName = currentSelectedLayer.feature.properties.name;
-            let newName = prompt("نام جدید را وارد کنید:", oldName);
-            if (!newName || newName === oldName) return;
-            let id = currentSelectedLayer.feature.properties.id;
-            let response = await fetch(`${API_URL}/${id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: newName })
-            });
-            if (response.ok) { alert('نام تغییر کرد.'); cancelEdit(); }
-        }
+            // ذخیره شکل جدید
+            async function saveGeometry() {
+                if (!currentSelectedLayer) return;
+                let coords = currentSelectedLayer
+                    .getLatLngs()[0]
+                    .map((pt) => [pt.lng, pt.lat]);
+                let id = currentSelectedLayer.feature.properties.id;
 
-        async function deleteZone() {
-            if (!currentSelectedLayer) return;
-            if (!confirm(`حذف کامل "${currentSelectedLayer.feature.properties.name}"؟`)) return;
-            let id = currentSelectedLayer.feature.properties.id;
-            let response = await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
-            if (response.ok) { alert('محدوده حذف شد.'); cancelEdit(); }
-        }
+                let response = await fetch(`${API_URL}/${id}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ coordinates: coords }),
+                });
 
-        loadExistingZones();
-    </script>
-</body>
+                if (response.ok) {
+                    alert("شکل محدوده با موفقیت ذخیره شد.");
+                    isEditMode = false;
+                    currentSelectedLayer = null;
+                    document.getElementById("zoneInfoPanel").style.display =
+                        "none";
+                    document.getElementById("editPanel").style.display = "none";
+                    loadExistingZones();
+                } else {
+                    alert("خطا در بروزرسانی!");
+                }
+            }
+
+            // تغییر نام
+            async function renameZone() {
+                if (!currentSelectedLayer) return;
+                let oldName = currentSelectedLayer.feature.properties.name;
+                let newName = prompt("نام جدید را وارد کنید:", oldName);
+                if (!newName || newName.trim() === oldName) return;
+
+                let id = currentSelectedLayer.feature.properties.id;
+                let response = await fetch(`${API_URL}/${id}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name: newName.trim() }),
+                });
+
+                if (response.ok) {
+                    alert("نام با موفقیت تغییر کرد.");
+                    currentSelectedLayer = null;
+                    document.getElementById("zoneInfoPanel").style.display =
+                        "none";
+                    loadExistingZones();
+                } else {
+                    alert("خطا در تغییر نام!");
+                }
+            }
+
+            // حذف محدوده
+            async function deleteZone() {
+                if (!currentSelectedLayer) return;
+                let name = currentSelectedLayer.feature.properties.name;
+                if (!confirm(`آیا از حذف کامل "${name}" مطمئن هستید؟`)) return;
+
+                let id = currentSelectedLayer.feature.properties.id;
+                let response = await fetch(`${API_URL}/${id}`, {
+                    method: "DELETE",
+                });
+
+                if (response.ok) {
+                    alert("محدوده با موفقیت حذف شد.");
+                    currentSelectedLayer = null;
+                    isEditMode = false;
+                    document.getElementById("zoneInfoPanel").style.display =
+                        "none";
+                    document.getElementById("editPanel").style.display = "none";
+                    loadExistingZones();
+                } else {
+                    alert("خطا در حذف!");
+                }
+            }
+
+            // ========== شروع ==========
+            loadExistingZones();
+        </script>
+    </body>
 </html>

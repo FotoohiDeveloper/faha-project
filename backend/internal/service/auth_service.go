@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -70,8 +71,16 @@ func (s *AuthService) BeginFirstSetup(ctx context.Context, username, otp string)
 		return nil, nil, err
 	}
 
-	sessionKey := fmt.Sprintf("webauthn_session:%s", username)
-	s.redis.Set(ctx, sessionKey, sessionData, 5*time.Minute)
+	// سریالایز sessionData به JSON برای ذخیره در Redis
+	sessionBytes, err := json.Marshal(sessionData)
+	if err != nil {
+		return nil, nil, errors.New("خطا در پردازش داده‌های سشن WebAuthn")
+	}
+
+	sessionKey := fmt.Sprintf("webauthn_reg_session:%s", username)
+	if err := s.redis.Set(ctx, sessionKey, sessionBytes, 5*time.Minute).Err(); err != nil {
+		return nil, nil, errors.New("خطا در ذخیره سشن موقت")
+	}
 
 	return &user, creation, nil
 }
@@ -163,9 +172,17 @@ func (s *AuthService) BeginLogin(ctx context.Context, username string) (*models.
 		return nil, nil, err
 	}
 
+	// سریالایز sessionData به JSON برای ذخیره در Redis
+	sessionBytes, err := json.Marshal(sessionData)
+	if err != nil {
+		return nil, nil, errors.New("خطا در پردازش داده‌های سشن WebAuthn")
+	}
+
 	// ذخیره SessionData موقت در ردیس برای 5 دقیقه
 	sessionKey := fmt.Sprintf("webauthn_login_session:%s", username)
-	s.redis.Set(ctx, sessionKey, sessionData, 5*time.Minute)
+	if err := s.redis.Set(ctx, sessionKey, sessionBytes, 5*time.Minute).Err(); err != nil {
+		return nil, nil, errors.New("خطا در ذخیره سشن موقت")
+	}
 
 	return &user, assertion, nil
 }

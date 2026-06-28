@@ -41,9 +41,9 @@ func main() {
 
 	// ۳. تزریق وابستگی‌ها (Dependency Injection)
 	authService := service.NewAuthService(database.DB, database.Redis, webAuthnApp)
-	
+
 	// ساخت هندلرها
-	authHandler := handlers.NewAuthHandler(authService)
+	authHandler := handlers.NewAuthHandler(authService, database.Redis)
 	// commanderHandler := handlers.NewCommanderHandler(authService) // هندلر فرماندهی اضافه شد
 
 	// ۴. راه‌اندازی Fiber
@@ -69,16 +69,16 @@ func main() {
 	app.Get("/dev/map", func(c fiber.Ctx) error {
 		return c.SendFile("./map.html")
 	})
-	
+
 	// ۶. ثبت روت‌ها در گروه api/v1
 	api := app.Group("/api/v1")
-	
+
 	// روت‌های احراز هویت
 	routes.SetupAuthRoutes(api, authHandler)
-	
+
 	// روت‌های فرماندهی (محافظت شده)
 	// routes.SetupCommanderRoutes(api, database.DB, database.Redis, commanderHandler)
-	
+
 	// روت‌های توسعه‌دهنده (نقشه)
 	routes.SetupDevRoutes(api, database.DB)
 
